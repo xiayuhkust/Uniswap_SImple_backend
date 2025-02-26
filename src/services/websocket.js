@@ -1,67 +1,80 @@
-const WebSocket = require('ws');
+const socketIO = require('socket.io');
 const http = require('http');
 const poolService = require('./pool');
 const tokenService = require('./token');
 
-// WebSocket server instance
-let wss = null;
+// Socket.IO server instance
+let io = null;
 let server = null;
 
 /**
  * Initialize WebSocket server
  * @param {http.Server} httpServer HTTP server instance
- * @returns {WebSocket.Server} WebSocket server instance
+ * @returns {socketIO.Server} Socket.IO server instance
  */
 function initWebSocketServer(httpServer) {
-  if (wss) {
+  if (io) {
     console.log('WebSocket server already initialized');
-    return wss;
+    return io;
   }
   
   server = httpServer;
-  wss = new WebSocket.Server({ server });
+  // Use the most basic configuration possible
+  io = socketIO(server, {
+    cors: {
+      origin: '*',
+      methods: '*',
+      allowedHeaders: '*',
+      credentials: false
+    },
+    transports: ['polling', 'websocket'],
+    pingTimeout: 30000,
+    pingInterval: 25000,
+    connectTimeout: 30000,
+    allowEIO3: true
+  });
   
-  wss.on('connection', (ws) => {
+  io.on('connection', (socket) => {
     console.log('Client connected to WebSocket');
     
     // Send initial data
-    sendPoolsToClient(ws);
+    sendPoolsToClient(socket);
     
-    ws.on('message', async (message) => {
-      try {
-        const data = JSON.parse(message);
-        
-        if (data.type === 'subscribe') {
-          handleSubscription(ws, data);
-        } else if (data.type === 'request') {
-          handleRequest(ws, data);
-        }
-      } catch (error) {
-        console.error('Error processing WebSocket message:', error);
-        sendError(ws, 'Invalid message format');
-      }
+    // Add a simple ping-pong test
+    socket.on('ping', () => {
+      console.log('Received ping from client');
+      socket.emit('pong', { message: 'Server pong response', timestamp: new Date().toISOString() });
     });
     
-    ws.on('close', () => {
-      console.log('Client disconnected from WebSocket');
+    // Handle subscription requests
+    socket.on('subscribe:pool', (poolAddress) => {
+      console.log(`Client subscribed to pool: ${poolAddress}`);
+      socket.join(`pool:${poolAddress}`);
     });
     
-    ws.on('error', (error) => {
+    socket.on('unsubscribe:pool', (poolAddress) => {
+      console.log(`Client unsubscribed from pool: ${poolAddress}`);
+      socket.leave(`pool:${poolAddress}`);
+    });
+    
+    // Handle disconnection
+    socket.on('disconnect', (reason) => {
+      console.log(`Client disconnected from WebSocket: ${reason}`);
+    });
+    
+    // Handle errors
+    socket.on('error', (error) => {
       console.error('WebSocket error:', error);
     });
     
-    // Send a ping every 30 seconds to keep the connection alive
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
-      } else {
-        clearInterval(pingInterval);
-      }
-    }, 30000);
+    // Handle connection errors
+    socket.on('connect_error', (error) => {
+      console.error('WebSocket connection error:', error);
+    });
   });
   
   console.log('WebSocket server initialized');
-  return wss;
+  return io;
 }
 
 /**
