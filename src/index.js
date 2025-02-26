@@ -50,6 +50,29 @@ async function initializeAndStart() {
     // Initialize scheduler
     schedulerService.initScheduler();
     
+    // Initialize pool creation event listener
+    const poolService = require('./services/pool');
+    const websocketService = require('./services/websocket');
+    
+    blockchainService.initPoolCreationEventListener(async (token0, token1, fee, tickSpacing, poolAddress, event) => {
+      console.log('New pool created:', poolAddress);
+      
+      try {
+        // Fetch pool data from chain
+        const poolData = await poolService.fetchPoolDataFromChain(poolAddress);
+        
+        // Create or update pool in database
+        await poolService.createOrUpdatePool(poolData);
+        
+        // Notify clients about new pool
+        console.log('Notifying clients about new pool');
+        websocketService.notifyPoolCreated(poolData);
+      } catch (error) {
+        console.error('Error processing pool creation event:', error);
+      }
+    });
+    console.log('Pool creation event listener initialized');
+    
     // Start server
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
