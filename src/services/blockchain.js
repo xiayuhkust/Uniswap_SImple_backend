@@ -1,6 +1,12 @@
 const { ethers } = require('ethers');
 const config = require('../config');
 
+// Factory ABI for blockchain interactions
+const FACTORY_ABI = [
+  'event PoolCreated(address token0, address token1, uint24 fee, int24 tickSpacing, address pool)',
+  'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)'
+];
+
 // Provider instance
 let provider = null;
 
@@ -56,12 +62,11 @@ function getContract(address, abi, signer = null) {
 
 /**
  * Get the factory contract instance
- * @param {string} abi Factory ABI
  * @param {ethers.Signer} signer Signer (optional)
  * @returns {ethers.Contract} Factory contract instance
  */
-function getFactoryContract(abi, signer = null) {
-  return getContract(config.blockchain.factoryAddress, abi, signer);
+function getFactoryContract(signer = null) {
+  return getContract(config.blockchain.factoryAddress, FACTORY_ABI, signer);
 }
 
 /**
@@ -119,6 +124,36 @@ async function getTransactionReceipt(txHash) {
   return await provider.getTransactionReceipt(txHash);
 }
 
+/**
+ * Initialize pool creation event listener
+ * @param {Function} callback Callback function to handle pool creation events
+ * @returns {Function} Unsubscribe function
+ */
+function initPoolCreationEventListener(callback) {
+  console.log('Initializing pool creation event listener...');
+  const factoryContract = getFactoryContract();
+  
+  // Add debug log to track when the listener is set up
+  console.log(`Listening for PoolCreated events from factory contract: ${config.blockchain.factoryAddress}`);
+  
+  // Listen for PoolCreated events
+  return listenForEvents(factoryContract, 'PoolCreated', (token0, token1, fee, tickSpacing, pool, event) => {
+    // Add debug log to track when events are received
+    console.log('Received PoolCreated event:', {
+      token0,
+      token1,
+      fee: fee.toString(),
+      tickSpacing: tickSpacing.toString(),
+      pool,
+      blockNumber: event.blockNumber,
+      transactionHash: event.transactionHash
+    });
+    
+    // Call the callback with the event data
+    callback(token0, token1, fee, tickSpacing, pool, event);
+  });
+}
+
 module.exports = {
   initProvider,
   getProvider,
@@ -128,5 +163,7 @@ module.exports = {
   listenForEvents,
   getPastEvents,
   getCurrentBlockNumber,
-  getTransactionReceipt
+  getTransactionReceipt,
+  initPoolCreationEventListener,
+  FACTORY_ABI
 };
