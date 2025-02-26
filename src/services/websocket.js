@@ -1,209 +1,125 @@
-const WebSocket = require('ws');
+const socketIO = require('socket.io');
 const http = require('http');
 const poolService = require('./pool');
 const tokenService = require('./token');
 
-// WebSocket server instance
-let wss = null;
+// Socket.IO server instance
+let io = null;
 let server = null;
 
 /**
  * Initialize WebSocket server
  * @param {http.Server} httpServer HTTP server instance
- * @returns {WebSocket.Server} WebSocket server instance
+ * @returns {socketIO.Server} Socket.IO server instance
  */
 function initWebSocketServer(httpServer) {
-  if (wss) {
+  if (io) {
     console.log('WebSocket server already initialized');
-    return wss;
+    return io;
   }
   
   server = httpServer;
-  wss = new WebSocket.Server({ server });
+  // Use the most basic configuration possible
+  io = socketIO(server, {
+    cors: {
+      origin: '*',
+      methods: '*',
+      allowedHeaders: '*',
+      credentials: false
+    },
+    transports: ['polling', 'websocket'],
+    pingTimeout: 30000,
+    pingInterval: 25000,
+    connectTimeout: 30000,
+    allowEIO3: true
+  });
   
-  wss.on('connection', (ws) => {
+  io.on('connection', (socket) => {
     console.log('Client connected to WebSocket');
     
     // Send initial data
-    sendPoolsToClient(ws);
+    sendPoolsToClient(socket);
     
-    ws.on('message', async (message) => {
-      try {
-        const data = JSON.parse(message);
-        
-        if (data.type === 'subscribe') {
-          handleSubscription(ws, data);
-        } else if (data.type === 'request') {
-          handleRequest(ws, data);
-        }
-      } catch (error) {
-        console.error('Error processing WebSocket message:', error);
-        sendError(ws, 'Invalid message format');
-      }
+    // Add a simple ping-pong test
+    socket.on('ping', () => {
+      console.log('Received ping from client');
+      socket.emit('pong', { message: 'Server pong response', timestamp: new Date().toISOString() });
     });
     
-    ws.on('close', () => {
-      console.log('Client disconnected from WebSocket');
+    // Handle subscription requests
+    socket.on('subscribe:pool', (poolAddress) => {
+      console.log(`Client subscribed to pool: ${poolAddress}`);
+      socket.join(`pool:${poolAddress}`);
     });
     
-    ws.on('error', (error) => {
+    socket.on('unsubscribe:pool', (poolAddress) => {
+      console.log(`Client unsubscribed from pool: ${poolAddress}`);
+      socket.leave(`pool:${poolAddress}`);
+    });
+    
+    // Handle disconnection
+    socket.on('disconnect', (reason) => {
+      console.log(`Client disconnected from WebSocket: ${reason}`);
+    });
+    
+    // Handle errors
+    socket.on('error', (error) => {
       console.error('WebSocket error:', error);
     });
     
-    // Send a ping every 30 seconds to keep the connection alive
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
-      } else {
-        clearInterval(pingInterval);
-      }
-    }, 30000);
+    // Handle connection errors
+    socket.on('connect_error', (error) => {
+      console.error('WebSocket connection error:', error);
+    });
   });
   
   console.log('WebSocket server initialized');
-  return wss;
-}
-
-/**
- * Handle subscription requests
- * @param {WebSocket} ws WebSocket connection
- * @param {Object} data Subscription data
- */
-function handleSubscription(ws, data) {
-  const { channel } = data;
-  
-  if (!channel) {
-    return sendError(ws, 'Channel is required for subscription');
-  }
-  
-  // Store subscription info on the connection
-  ws.subscriptions = ws.subscriptions || [];
-  
-  if (!ws.subscriptions.includes(channel)) {
-    ws.subscriptions.push(channel);
-    console.log(`Client subscribed to channel: ${channel}`);
-  }
-  
-  // Send confirmation
-  sendToClient(ws, {
-    type: 'subscription',
-    status: 'success',
-    channel
-  });
-}
-
-/**
- * Handle data requests
- * @param {WebSocket} ws WebSocket connection
- * @param {Object} data Request data
- */
-async function handleRequest(ws, data) {
-  const { resource, id } = data;
-  
-  if (!resource) {
-    return sendError(ws, 'Resource is required for request');
-  }
-  
-  try {
-    let responseData;
-    
-    if (resource === 'pools') {
-      responseData = await poolService.getAllPools();
-    } else if (resource === 'pool' && id) {
-      responseData = await poolService.getPoolByAddress(id);
-    } else if (resource === 'tokens') {
-      responseData = await tokenService.getAllTokens();
-    } else if (resource === 'token' && id) {
-      responseData = await tokenService.getTokenByAddress(id);
-    } else {
-      return sendError(ws, 'Invalid resource or missing id');
-    }
-    
-    sendToClient(ws, {
-      type: 'response',
-      resource,
-      id,
-      data: responseData
-    });
-  } catch (error) {
-    console.error(`Error handling request for ${resource}:`, error);
-    sendError(ws, `Failed to fetch ${resource}: ${error.message}`);
-  }
+  return io;
 }
 
 /**
  * Send error message to client
- * @param {WebSocket} ws WebSocket connection
+ * @param {socketIO.Socket} socket Socket.IO connection
  * @param {string} message Error message
  */
-function sendError(ws, message) {
-  sendToClient(ws, {
-    type: 'error',
-    message
-  });
-}
-
-/**
- * Send data to client
- * @param {WebSocket} ws WebSocket connection
- * @param {Object} data Data to send
- */
-function sendToClient(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
+function sendError(socket, message) {
+  socket.emit('error', { message });
 }
 
 /**
  * Send data to all connected clients
+ * @param {string} event Event name
  * @param {Object} data Data to send
  */
-function broadcastToAll(data) {
-  if (!wss) return;
+function broadcastToAll(event, data) {
+  if (!io) return;
   
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
-    }
-  });
+  io.emit(event, data);
 }
 
 /**
- * Send data to clients subscribed to a specific channel
- * @param {string} channel Channel name
+ * Send data to clients in a specific room
+ * @param {string} room Room name
+ * @param {string} event Event name
  * @param {Object} data Data to send
  */
-function broadcastToChannel(channel, data) {
-  if (!wss) return;
+function broadcastToRoom(room, event, data) {
+  if (!io) return;
   
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN && 
-        client.subscriptions && 
-        client.subscriptions.includes(channel)) {
-      client.send(JSON.stringify({
-        type: 'update',
-        channel,
-        data
-      }));
-    }
-  });
+  io.to(room).emit(event, data);
 }
 
 /**
  * Send pools data to client
- * @param {WebSocket} ws WebSocket connection
+ * @param {socketIO.Socket} socket Socket.IO connection
  */
-async function sendPoolsToClient(ws) {
+async function sendPoolsToClient(socket) {
   try {
     const pools = await poolService.getAllPools();
-    
-    sendToClient(ws, {
-      type: 'cache',
-      resource: 'pools',
-      data: pools
-    });
+    socket.emit('cache:pools', pools);
   } catch (error) {
     console.error('Error sending pools to client:', error);
+    sendError(socket, 'Failed to fetch pools');
   }
 }
 
@@ -213,7 +129,13 @@ async function sendPoolsToClient(ws) {
  * @param {Object} poolData Updated pool data
  */
 function notifyPoolUpdate(poolAddress, poolData) {
-  broadcastToChannel('pool:updated', {
+  broadcastToAll('pool:updated', {
+    address: poolAddress,
+    ...poolData
+  });
+  
+  // Also notify clients subscribed to this specific pool
+  broadcastToRoom(`pool:${poolAddress}`, 'pool:detail:updated', {
     address: poolAddress,
     ...poolData
   });
@@ -224,7 +146,7 @@ function notifyPoolUpdate(poolAddress, poolData) {
  * @param {Object} poolData New pool data
  */
 function notifyPoolCreated(poolData) {
-  broadcastToChannel('pool:created', poolData);
+  broadcastToAll('pool:created', poolData);
   
   // Also update the pools cache for all clients
   updatePoolsCache();
@@ -236,8 +158,7 @@ function notifyPoolCreated(poolData) {
 async function updatePoolsCache() {
   try {
     const pools = await poolService.getAllPools();
-    
-    broadcastToChannel('cache:pools', pools);
+    broadcastToAll('cache:pools', pools);
   } catch (error) {
     console.error('Error updating pools cache:', error);
   }
@@ -247,18 +168,18 @@ async function updatePoolsCache() {
  * Close WebSocket server
  */
 function closeWebSocketServer() {
-  if (wss) {
-    wss.close(() => {
+  if (io) {
+    io.close(() => {
       console.log('WebSocket server closed');
     });
-    wss = null;
+    io = null;
   }
 }
 
 module.exports = {
   initWebSocketServer,
   broadcastToAll,
-  broadcastToChannel,
+  broadcastToRoom,
   notifyPoolUpdate,
   notifyPoolCreated,
   updatePoolsCache,

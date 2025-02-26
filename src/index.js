@@ -14,8 +14,15 @@ const config = require('./config');
 const app = express();
 const PORT = config.server.port || 3000;
 
-// Middleware
-app.use(cors());
+// Middleware with more permissive CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Access-Control-Allow-Origin'],
+  credentials: false,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
 app.use(express.json());
 
 // Routes
@@ -51,8 +58,8 @@ async function initializeAndStart() {
     schedulerService.initScheduler();
     
     // Start server
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on port ${PORT}, bound to all network interfaces`);
     });
   } catch (error) {
     console.error('Failed to initialize server:', error);
